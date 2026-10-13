@@ -406,11 +406,23 @@ static void wait_answer_interruptible(struct fuse_conn *fc,
 __releases(fc->lock)
 __acquires(fc->lock)
 {
-	if (signal_pending(current))
+	/*
+	 * The suspend freezer wakes interruptible sleepers with a fake signal.
+	 * Freeze and keep waiting instead of treating it as an interrupt, or
+	 * requests the (also frozen) daemon has not read yet fail with -EINTR.
+	 */
+	if (signal_pending(current) && !freezing(current))
 		return;
 
 	spin_unlock(&fc->lock);
-	wait_event_interruptible(req->waitq, req->state == FUSE_REQ_FINISHED);
+	for (;;) {
+		wait_event_interruptible(req->waitq,
+				req->state == FUSE_REQ_FINISHED || freezing(current));
+		if (req->state == FUSE_REQ_FINISHED || !freezing(current))
+			break;
+		if (!try_to_freeze())
+			break;
+	}
 	spin_lock(&fc->lock);
 }
 
